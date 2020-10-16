@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 #ifndef TRACKER_CLIENT_H
@@ -44,7 +44,7 @@ typedef struct
 	do { \
 		if (pTrackerServer->sock < 0) \
 		{ \
-			if ((conn=tracker_connect_server( \
+			if ((conn=tracker_make_connection( \
 				pTrackerServer, &result)) != NULL) \
 			{ \
 				return result; \
@@ -82,7 +82,7 @@ ConnectionInfo *tracker_get_connection_ex(TrackerServerGroup *pTrackerGroup);
 * return: 0 success, !=0 fail
 **/
 ConnectionInfo *tracker_get_connection_r_ex(TrackerServerGroup *pTrackerGroup, \
-		ConnectionInfo *pTrackerServer, int *err_no);
+		TrackerServerInfo *pTrackerServer, int *err_no);
 
 #define tracker_get_all_connections() \
 	tracker_get_all_connections_ex((&g_tracker_group))

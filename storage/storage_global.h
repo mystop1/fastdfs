@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 //storage_global.h
@@ -21,7 +21,6 @@
 #include "client_global.h"
 #include "fdht_types.h"
 #include "fastcommon/local_ip_func.h"
-#include "trunk_shared.h"
 
 #ifdef WITH_HTTPD
 #include "fdfs_http_shared.h"
@@ -53,13 +52,14 @@ typedef struct
 
 typedef struct
 {
-	int total_mb; //total spaces
-	int free_mb;  //free spaces
-} FDFSStorePathInfo;
+    signed char my_status;   //my status from tracker server
+    signed char my_result;   //my report result
+    signed char src_storage_result; //src storage report result
+    bool get_my_ip_done;
+    bool report_my_status;
+} StorageStatusPerTracker;
 
 extern volatile bool g_continue_flag;
-
-extern FDFSStorePathInfo *g_path_space_list;
 
 /* subdirs under store path, g_subdir_count * g_subdir_count 2 level subdirs */
 extern int g_subdir_count_per_path;
@@ -78,6 +78,7 @@ extern bool g_disk_rw_direct;     //if file read / write directly
 extern bool g_disk_rw_separated;  //if disk read / write separated
 extern int g_disk_reader_threads; //disk reader thread count per store base path
 extern int g_disk_writer_threads; //disk writer thread count per store base path
+extern int g_disk_recovery_threads; //disk recovery thread count
 extern int g_extra_open_file_flags; //extra open file flags
 
 extern int g_file_distribute_path_mode;
@@ -116,8 +117,8 @@ extern char g_sync_src_id[FDFS_STORAGE_ID_MAX_SIZE]; //the source storage server
 
 extern char g_group_name[FDFS_GROUP_NAME_MAX_LEN + 1];
 extern char g_my_server_id_str[FDFS_STORAGE_ID_MAX_SIZE]; //my server id string
-extern char g_tracker_client_ip[IP_ADDRESS_SIZE]; //storage ip as tracker client
-extern char g_last_storage_ip[IP_ADDRESS_SIZE];	//the last storage ip address
+extern FDFSMultiIP g_tracker_client_ip; //storage ip as tracker client
+extern FDFSMultiIP g_last_storage_ip;	//the last storage ip address
 
 extern LogContext g_access_log_context;
 
@@ -128,6 +129,8 @@ extern byte g_id_type_in_filename; //id type of the storage server in the filena
 extern bool g_use_access_log;  //if log to access log
 extern bool g_rotate_access_log;  //if rotate the access log every day
 extern bool g_rotate_error_log;  //if rotate the error log every day
+extern bool g_compress_old_access_log; //if compress the old access log
+extern bool g_compress_old_error_log;  //if compress the old error log
 
 extern TimeInfo g_access_log_rotate_time; //rotate access log time base
 extern TimeInfo g_error_log_rotate_time;  //rotate error log time base
@@ -139,6 +142,8 @@ extern int g_namespace_len;
 
 extern int g_allow_ip_count;  /* -1 means match any ip address */
 extern in_addr_t *g_allow_ip_addrs;  /* sorted array, asc order */
+
+extern StorageStatusPerTracker *g_my_report_status;  //returned by tracker server
 
 extern gid_t g_run_by_gid;
 extern uid_t g_run_by_uid;
@@ -152,6 +157,10 @@ extern bool g_storage_ip_changed_auto_adjust;
 extern bool g_thread_kill_done;
 
 extern bool g_file_sync_skip_invalid_record;
+
+extern bool g_check_store_path_mark;
+extern bool g_compress_binlog;
+extern TimeInfo g_compress_binlog_time;  //compress binlog time base
 
 extern int g_thread_stack_size;
 extern int g_upload_priority;
@@ -167,11 +176,16 @@ extern char g_exe_name[256];
 #endif
 
 extern int g_log_file_keep_days;
+extern int g_compress_access_log_days_before;
+extern int g_compress_error_log_days_before;
 
 extern struct storage_nio_thread_data *g_nio_thread_data;  //network io thread data
 extern struct storage_dio_thread_data *g_dio_thread_data;  //disk io thread data
 
 int storage_cmp_by_server_id(const void *p1, const void *p2);
+
+int storage_insert_ip_addr_to_multi_ips(FDFSMultiIP *multi_ip,
+        const char *ip_addr, const int ips_limit);
 
 #ifdef __cplusplus
 }

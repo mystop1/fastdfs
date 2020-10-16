@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 #include <netdb.h>
@@ -15,7 +15,6 @@
 #include "storage_global.h"
 
 volatile bool g_continue_flag = true;
-FDFSStorePathInfo *g_path_space_list = NULL;
 int g_subdir_count_per_path = DEFAULT_DATA_DIR_COUNT_PER_PATH;
 
 int g_server_port = FDFS_STORAGE_SERVER_DEF_PORT;
@@ -32,6 +31,7 @@ bool g_disk_rw_direct = false;
 bool g_disk_rw_separated = true;
 int g_disk_reader_threads = DEFAULT_DISK_READER_THREADS;
 int g_disk_writer_threads = DEFAULT_DISK_WRITER_THREADS;
+int g_disk_recovery_threads = 1;
 int g_extra_open_file_flags = 0;
 
 int g_file_distribute_path_mode = FDFS_FILE_DIST_PATH_ROUND_ROBIN;
@@ -71,8 +71,8 @@ char g_sync_src_id[FDFS_STORAGE_ID_MAX_SIZE] = {0};
 
 char g_group_name[FDFS_GROUP_NAME_MAX_LEN + 1] = {0};
 char g_my_server_id_str[FDFS_STORAGE_ID_MAX_SIZE] = {0}; //my server id string
-char g_tracker_client_ip[IP_ADDRESS_SIZE] = {0}; //storage ip as tracker client
-char g_last_storage_ip[IP_ADDRESS_SIZE] = {0};	 //the last storage ip address
+FDFSMultiIP g_tracker_client_ip = {0, 0}; //storage ip as tracker client
+FDFSMultiIP g_last_storage_ip = {0, 0};	  //the last storage ip address
 
 LogContext g_access_log_context = {LOG_INFO, STDERR_FILENO, NULL};
 
@@ -80,6 +80,8 @@ in_addr_t g_server_id_in_filename = 0;
 bool g_use_access_log = false;    //if log to access log
 bool g_rotate_access_log = false; //if rotate the access log every day
 bool g_rotate_error_log = false;  //if rotate the error log every day
+bool g_compress_old_access_log = false; //if compress the old access log
+bool g_compress_old_error_log = false;  //if compress the old error log
 bool g_use_storage_id = false;    //identify storage by ID instead of IP address
 byte g_id_type_in_filename = FDFS_ID_TYPE_IP_ADDRESS; //id type of the storage server in the filename
 bool g_store_slave_file_use_link = false; //if store slave file use symbol link
@@ -90,6 +92,7 @@ char g_key_namespace[FDHT_MAX_NAMESPACE_LEN+1] = {0};
 int g_namespace_len = 0;
 int g_allow_ip_count = 0;
 in_addr_t *g_allow_ip_addrs = NULL;
+StorageStatusPerTracker *g_my_report_status = NULL;  //returned by tracker server
 
 TimeInfo g_access_log_rotate_time = {0, 0}; //rotate access log time base
 TimeInfo g_error_log_rotate_time  = {0, 0}; //rotate error log time base
@@ -106,6 +109,10 @@ bool g_storage_ip_changed_auto_adjust = false;
 bool g_thread_kill_done = false;
 bool g_file_sync_skip_invalid_record = false;
 
+bool g_check_store_path_mark = true;
+bool g_compress_binlog = false;
+TimeInfo g_compress_binlog_time = {0, 0};
+
 int g_thread_stack_size = 512 * 1024;
 int g_upload_priority = DEFAULT_UPLOAD_PRIORITY;
 time_t g_up_time = 0;
@@ -120,6 +127,8 @@ char g_exe_name[256] = {0};
 #endif
 
 int g_log_file_keep_days = 0;
+int g_compress_access_log_days_before = 0;
+int g_compress_error_log_days_before = 0;
 struct storage_nio_thread_data *g_nio_thread_data = NULL;
 struct storage_dio_thread_data *g_dio_thread_data = NULL;
 
@@ -129,3 +138,34 @@ int storage_cmp_by_server_id(const void *p1, const void *p2)
 		(*((FDFSStorageServer **)p2))->server.id);
 }
 
+
+int storage_insert_ip_addr_to_multi_ips(FDFSMultiIP *multi_ip,
+        const char *ip_addr, const int ips_limit)
+{
+    int i;
+    if (multi_ip->count == 0)
+    {
+        multi_ip->count = 1;
+        multi_ip->ips[0].type = fdfs_get_ip_type(ip_addr);
+        strcpy(multi_ip->ips[0].address, ip_addr);
+        return 0;
+    }
+
+    for (i = 0; i < multi_ip->count; i++)
+    {
+        if (strcmp(multi_ip->ips[i].address, ip_addr) == 0)
+        {
+            return EEXIST;
+        }
+    }
+
+    if (i >= ips_limit)
+    {
+        return ENOSPC;
+    }
+
+    multi_ip->ips[i].type = fdfs_get_ip_type(ip_addr);
+    strcpy(multi_ip->ips[i].address, ip_addr);
+    multi_ip->count++;
+    return 0;
+}

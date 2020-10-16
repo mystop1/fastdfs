@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 #include <stdio.h>
@@ -30,8 +30,16 @@ static int fdfs_dump_global_vars(char *buff, const int buffSize)
 	char szSyncUntilTimestamp[32];
 	char szUptime[32];
 	char reserved_space_str[32];
+    char tracker_client_ip_str[256];
+    char last_storage_ip_str[256];
+    char *p;
 	int total_len;
 	int i;
+
+    fdfs_multi_ips_to_string(&g_tracker_client_ip,
+            tracker_client_ip_str, sizeof(tracker_client_ip_str));
+    fdfs_multi_ips_to_string(&g_last_storage_ip,
+            last_storage_ip_str, sizeof(last_storage_ip_str));
 
 	total_len = snprintf(buff, buffSize,
 		"g_fdfs_connect_timeout=%ds\n"
@@ -177,8 +185,8 @@ static int fdfs_dump_global_vars(char *buff, const int buffSize)
 		, formatDatetime(g_sync_until_timestamp, "%Y-%m-%d %H:%M:%S", 
 			szSyncUntilTimestamp, sizeof(szSyncUntilTimestamp))
                 , g_my_server_id_str
-		, g_tracker_client_ip
-		, g_last_storage_ip
+		, tracker_client_ip_str
+		, last_storage_ip_str 
 		, g_check_file_duplicate
 		, g_key_namespace
 		, g_namespace_len
@@ -206,7 +214,8 @@ static int fdfs_dump_global_vars(char *buff, const int buffSize)
 		, g_store_path_index
 		, g_current_trunk_file_id
 		, g_trunk_sync_thread_count
-		, g_trunk_server.ip_addr, g_trunk_server.port
+		, g_trunk_server.connections[0].ip_addr
+        , g_trunk_server.connections[0].port
 		, g_trunk_total_free_space
 		, g_use_connection_pool
 		, g_connection_pool_max_idle_time
@@ -237,19 +246,23 @@ static int fdfs_dump_global_vars(char *buff, const int buffSize)
 		total_len += snprintf(buff + total_len, buffSize - total_len,
 				"\tg_fdfs_store_paths.paths[%d]=%s, " \
 				"total=%d MB, free=%d MB\n", i, \
-				g_fdfs_store_paths.paths[i], \
-				g_path_space_list[i].total_mb, \
-				g_path_space_list[i].free_mb);
+				g_fdfs_store_paths.paths[i].path, \
+				g_fdfs_store_paths.paths[i].total_mb, \
+				g_fdfs_store_paths.paths[i].free_mb);
 	}
 
-	total_len += snprintf(buff + total_len, buffSize - total_len,
-			"\ng_local_host_ip_count=%d\n", g_local_host_ip_count);
-	for (i=0; i<g_local_host_ip_count; i++)
-	{
-		total_len += snprintf(buff + total_len, buffSize - total_len,
-				"\tg_local_host_ip_addrs[%d]=%s\n", i, 
-				g_local_host_ip_addrs + i * IP_ADDRESS_SIZE);
-	}
+    if (total_len < buffSize - 1)
+    {
+        *(buff + total_len++) = '\n';
+    }
+    p = buff + total_len;
+    local_host_ip_addrs_to_string(p, buffSize - total_len);
+    total_len += strlen(p);
+    if (total_len < buffSize - 1)
+    {
+        *(buff + total_len++) = '\n';
+    }
+    *(buff + total_len) = '\0';
 
 	return total_len;
 }
@@ -257,8 +270,8 @@ static int fdfs_dump_global_vars(char *buff, const int buffSize)
 static int fdfs_dump_tracker_servers(char *buff, const int buffSize)
 {
 	int total_len;
-	ConnectionInfo *pTrackerServer;
-	ConnectionInfo *pTrackerEnd;
+	TrackerServerInfo *pTrackerServer;
+	TrackerServerInfo *pTrackerEnd;
 
 	total_len = snprintf(buff, buffSize, \
 		"\ng_tracker_group.server_count=%d, " \
@@ -275,9 +288,10 @@ static int fdfs_dump_tracker_servers(char *buff, const int buffSize)
 		pTrackerServer<pTrackerEnd; pTrackerServer++)
 	{
 		total_len += snprintf(buff + total_len, buffSize - total_len,
-			"\t%d. tracker server=%s:%d\n", \
-			(int)(pTrackerServer - g_tracker_group.servers) + 1, \
-			pTrackerServer->ip_addr, pTrackerServer->port);
+			"\t%d. tracker server=%s:%d\n",
+			(int)(pTrackerServer - g_tracker_group.servers) + 1,
+			pTrackerServer->connections[0].ip_addr,
+            pTrackerServer->connections[0].port);
 	}
 
 	return total_len;

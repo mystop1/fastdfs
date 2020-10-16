@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 //tracker_proto.h
@@ -12,6 +12,7 @@
 #define _TRACKER_PROTO_H_
 
 #include "tracker_types.h"
+#include "fdfs_global.h"
 #include "fastcommon/connection_pool.h"
 #include "fastcommon/ini_file_reader.h"
 
@@ -34,6 +35,8 @@
 #define TRACKER_PROTO_CMD_STORAGE_FETCH_TRUNK_FID   72  //storage get current trunk file id
 #define TRACKER_PROTO_CMD_STORAGE_GET_STATUS	    71  //get storage status from tracker
 #define TRACKER_PROTO_CMD_STORAGE_GET_SERVER_ID	    70  //get storage server id from tracker
+#define TRACKER_PROTO_CMD_STORAGE_GET_MY_IP	        60  //get storage server ip from tracker
+#define TRACKER_PROTO_CMD_STORAGE_CHANGE_STATUS     59  //current storage can change it's status
 #define TRACKER_PROTO_CMD_STORAGE_FETCH_STORAGE_IDS 69  //get all storage ids from tracker
 #define TRACKER_PROTO_CMD_STORAGE_GET_GROUP_NAME   109  //get storage group name from tracker
 
@@ -77,7 +80,7 @@
 #define STORAGE_PROTO_CMD_UPLOAD_SLAVE_FILE	21
 #define STORAGE_PROTO_CMD_QUERY_FILE_INFO	22
 #define STORAGE_PROTO_CMD_UPLOAD_APPENDER_FILE	23   //create appender file
-#define STORAGE_PROTO_CMD_APPEND_FILE		24   //append file
+#define STORAGE_PROTO_CMD_APPEND_FILE		24       //append file
 #define STORAGE_PROTO_CMD_SYNC_APPEND_FILE	25
 #define STORAGE_PROTO_CMD_FETCH_ONE_PATH_BINLOG	26   //fetch binlog of one store path
 #define STORAGE_PROTO_CMD_RESP			TRACKER_PROTO_CMD_RESP
@@ -91,10 +94,12 @@
 #define STORAGE_PROTO_CMD_TRUNK_DELETE_BINLOG_MARKS  32  //since V3.07, tracker to storage
 #define STORAGE_PROTO_CMD_TRUNK_TRUNCATE_BINLOG_FILE 33  //since V3.07, trunk storage to storage
 
-#define STORAGE_PROTO_CMD_MODIFY_FILE		     34  //since V3.08
-#define STORAGE_PROTO_CMD_SYNC_MODIFY_FILE	     35  //since V3.08
-#define STORAGE_PROTO_CMD_TRUNCATE_FILE		     36  //since V3.08
-#define STORAGE_PROTO_CMD_SYNC_TRUNCATE_FILE	     37  //since V3.08
+#define STORAGE_PROTO_CMD_MODIFY_FILE		           34  //since V3.08
+#define STORAGE_PROTO_CMD_SYNC_MODIFY_FILE	           35  //since V3.08
+#define STORAGE_PROTO_CMD_TRUNCATE_FILE		           36  //since V3.08
+#define STORAGE_PROTO_CMD_SYNC_TRUNCATE_FILE	       37  //since V3.08
+#define STORAGE_PROTO_CMD_REGENERATE_APPENDER_FILENAME 38  //since V6.02, rename appender file to normal file
+#define STORAGE_PROTO_CMD_SYNC_RENAME_FILE		       40  //since V6.02
 
 //for overwrite all old metadata
 #define STORAGE_SET_METADATA_FLAG_OVERWRITE	'O'
@@ -103,9 +108,10 @@
 #define STORAGE_SET_METADATA_FLAG_MERGE		'M'
 #define STORAGE_SET_METADATA_FLAG_MERGE_STR	"M"
 
-#define FDFS_PROTO_PKG_LEN_SIZE		8
-#define FDFS_PROTO_CMD_SIZE		1
-#define FDFS_PROTO_IP_PORT_SIZE		(IP_ADDRESS_SIZE + 6)
+#define FDFS_PROTO_PKG_LEN_SIZE        8
+#define FDFS_PROTO_CMD_SIZE            1
+#define FDFS_PROTO_IP_PORT_SIZE        (IP_ADDRESS_SIZE + 6)
+#define FDFS_PROTO_MULTI_IP_PORT_SIZE  (2 * IP_ADDRESS_SIZE + 8)
 
 #define TRACKER_QUERY_STORAGE_FETCH_BODY_LEN	(FDFS_GROUP_NAME_MAX_LEN \
 			+ IP_ADDRESS_SIZE - 1 + FDFS_PROTO_PKG_LEN_SIZE)
@@ -136,11 +142,13 @@ typedef struct
 	char domain_name[FDFS_DOMAIN_NAME_MAX_SIZE];
 	char init_flag;
 	signed char status;
+	char current_tracker_ip[IP_ADDRESS_SIZE];     //current tracker ip address
 	char tracker_count[FDFS_PROTO_PKG_LEN_SIZE];  //all tracker server count
 } TrackerStorageJoinBody;
 
 typedef struct
 {
+    unsigned char my_status;   //storage server status
 	char src_id[FDFS_STORAGE_ID_MAX_SIZE];  //src storage id
 } TrackerStorageJoinBodyResp;
 
@@ -208,8 +216,11 @@ typedef struct
 extern "C" {
 #endif
 
-#define tracker_connect_server(pTrackerServer, err_no) \
-	tracker_connect_server_ex(pTrackerServer, g_fdfs_connect_timeout, err_no)
+#define tracker_connect_server(pServerInfo, err_no) \
+	tracker_connect_server_ex(pServerInfo, g_fdfs_connect_timeout, err_no)
+
+#define tracker_make_connection(conn, err_no) \
+	tracker_make_connection_ex(conn, g_fdfs_connect_timeout, err_no)
 
 /**
 * connect to the tracker server
@@ -219,7 +230,7 @@ extern "C" {
 *	err_no: return the error no
 * return: ConnectionInfo pointer for success, NULL for fail
 **/
-ConnectionInfo *tracker_connect_server_ex(ConnectionInfo *pTrackerServer, \
+ConnectionInfo *tracker_connect_server_ex(TrackerServerInfo *pServerInfo,
 		const int connect_timeout, int *err_no);
 
 
@@ -227,12 +238,31 @@ ConnectionInfo *tracker_connect_server_ex(ConnectionInfo *pTrackerServer, \
 * connect to the tracker server directly without connection pool
 * params:
 *	pTrackerServer: tracker server
-* return: 0 for success, none zero for fail
+*   bind_ipaddr: the ip address to bind, NULL or empty for any
+*	err_no: return the error no
+*   log_connect_error: if log error info when connect fail
+* return: ConnectionInfo pointer for success, NULL for fail
 **/
-int tracker_connect_server_no_pool(ConnectionInfo *pTrackerServer);
+ConnectionInfo *tracker_connect_server_no_pool_ex(TrackerServerInfo *pServerInfo,
+        const char *bind_addr, int *err_no, const bool log_connect_error);
 
-#define tracker_disconnect_server(pTrackerServer) \
-	tracker_disconnect_server_ex(pTrackerServer, false)
+/**
+* connect to the tracker server directly without connection pool
+* params:
+*	pTrackerServer: tracker server
+*	err_no: return the error no
+* return: ConnectionInfo pointer for success, NULL for fail
+**/
+static inline ConnectionInfo *tracker_connect_server_no_pool(
+        TrackerServerInfo *pServerInfo, int *err_no)
+{
+    const char *bind_addr = NULL;
+    return tracker_connect_server_no_pool_ex(pServerInfo,
+            bind_addr, err_no, true);
+}
+
+#define tracker_close_connection(pTrackerServer) \
+	tracker_close_connection_ex(pTrackerServer, false)
 
 /**
 * close all connections to tracker servers
@@ -241,8 +271,16 @@ int tracker_connect_server_no_pool(ConnectionInfo *pTrackerServer);
 *	bForceClose: if force close the connection when use connection pool
 * return:
 **/
-void tracker_disconnect_server_ex(ConnectionInfo *pTrackerServer, \
+void tracker_close_connection_ex(ConnectionInfo *conn, \
 	const bool bForceClose);
+
+
+void tracker_disconnect_server(TrackerServerInfo *pServerInfo);
+
+void tracker_disconnect_server_no_pool(TrackerServerInfo *pServerInfo);
+
+ConnectionInfo *tracker_make_connection_ex(ConnectionInfo *conn,
+		const int connect_timeout, int *err_no);
 
 int fdfs_validate_group_name(const char *group_name);
 int fdfs_validate_filename(const char *filename);
@@ -250,7 +288,15 @@ int metadata_cmp_by_name(const void *p1, const void *p2);
 
 const char *get_storage_status_caption(const int status);
 
-int fdfs_recv_header(ConnectionInfo *pTrackerServer, int64_t *in_bytes);
+int fdfs_recv_header_ex(ConnectionInfo *pTrackerServer,
+        const int network_timeout, int64_t *in_bytes);
+
+static inline int fdfs_recv_header(ConnectionInfo *pTrackerServer,
+        int64_t *in_bytes)
+{
+    return fdfs_recv_header_ex(pTrackerServer,
+        g_fdfs_network_timeout, in_bytes);
+}
 
 int fdfs_recv_response(ConnectionInfo *pTrackerServer, \
 		char **buff, const int buff_size, \
@@ -278,7 +324,7 @@ int fdfs_get_ini_context_from_tracker(TrackerServerGroup *pTrackerGroup, \
                 IniContext *iniContext, bool * volatile continue_flag, \
                 const bool client_bind_addr, const char *bind_addr);
 
-int fdfs_get_tracker_status(ConnectionInfo *pTrackerServer, \
+int fdfs_get_tracker_status(TrackerServerInfo *pTrackerServer,
 		TrackerRunningStatus *pStatus);
 
 #ifdef __cplusplus

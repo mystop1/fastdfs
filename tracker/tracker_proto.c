@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 #include <sys/types.h>
@@ -22,20 +22,22 @@
 #include "fastcommon/sockopt.h"
 #include "tracker_types.h"
 #include "tracker_proto.h"
+#include "fdfs_shared_func.h"
 
-int fdfs_recv_header(ConnectionInfo *pTrackerServer, int64_t *in_bytes)
+int fdfs_recv_header_ex(ConnectionInfo *pTrackerServer,
+        const int network_timeout, int64_t *in_bytes)
 {
 	TrackerHeader resp;
 	int result;
 
-	if ((result=tcprecvdata_nb(pTrackerServer->sock, &resp, \
-		sizeof(resp), g_fdfs_network_timeout)) != 0)
+	if ((result=tcprecvdata_nb(pTrackerServer->sock, &resp,
+		sizeof(resp), network_timeout)) != 0)
 	{
-		logError("file: "__FILE__", line: %d, " \
-			"server: %s:%d, recv data fail, " \
-			"errno: %d, error info: %s", \
-			__LINE__, pTrackerServer->ip_addr, \
-			pTrackerServer->port, \
+		logError("file: "__FILE__", line: %d, "
+			"server: %s:%d, recv data fail, "
+			"errno: %d, error info: %s",
+			__LINE__, pTrackerServer->ip_addr,
+			pTrackerServer->port,
 			result, STRERROR(result));
 		*in_bytes = 0;
 		return result;
@@ -43,9 +45,9 @@ int fdfs_recv_header(ConnectionInfo *pTrackerServer, int64_t *in_bytes)
 
 	if (resp.status != 0)
 	{
-		logError("file: "__FILE__", line: %d, " \
-			"server: %s:%d, response status %d != 0", \
-			__LINE__, pTrackerServer->ip_addr, \
+		logError("file: "__FILE__", line: %d, "
+			"server: %s:%d, response status %d != 0",
+			__LINE__, pTrackerServer->ip_addr,
 			pTrackerServer->port, resp.status);
 
 		*in_bytes = 0;
@@ -55,10 +57,10 @@ int fdfs_recv_header(ConnectionInfo *pTrackerServer, int64_t *in_bytes)
 	*in_bytes = buff2long(resp.pkg_len);
 	if (*in_bytes < 0)
 	{
-		logError("file: "__FILE__", line: %d, " \
-			"server: %s:%d, recv package size " \
-			"%"PRId64" is not correct", \
-			__LINE__, pTrackerServer->ip_addr, \
+		logError("file: "__FILE__", line: %d, "
+			"server: %s:%d, recv package size "
+			"%"PRId64" is not correct",
+			__LINE__, pTrackerServer->ip_addr,
 			pTrackerServer->port, *in_bytes);
 		*in_bytes = 0;
 		return EINVAL;
@@ -212,13 +214,13 @@ int fdfs_deal_no_body_cmd_ex(const char *ip_addr, const int port, const int cmd)
 	strcpy(server_info.ip_addr, ip_addr);
 	server_info.port = port;
 	server_info.sock = -1;
-	if ((conn=tracker_connect_server(&server_info, &result)) == NULL)
+	if ((conn=tracker_make_connection(&server_info, &result)) == NULL)
 	{
 		return result;
 	}
 
 	result = fdfs_deal_no_body_cmd(conn, cmd);
-	tracker_disconnect_server_ex(conn, result != 0);
+	tracker_close_connection_ex(conn, result != 0);
 	return result;
 }
 
@@ -420,7 +422,7 @@ char *fdfs_pack_metadata(const FDFSMetaData *meta_list, const int meta_count, \
 	return meta_buff;
 }
 
-void tracker_disconnect_server_ex(ConnectionInfo *conn, \
+void tracker_close_connection_ex(ConnectionInfo *conn, \
 	const bool bForceClose)
 {
 	if (g_use_connection_pool)
@@ -434,38 +436,142 @@ void tracker_disconnect_server_ex(ConnectionInfo *conn, \
 	}
 }
 
-ConnectionInfo *tracker_connect_server_ex(ConnectionInfo *pTrackerServer, \
+ConnectionInfo *tracker_connect_server_ex(TrackerServerInfo *pServerInfo,
+		const int connect_timeout, int *err_no)
+{
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
+	ConnectionInfo *c;
+    int current_index;
+
+    c = tracker_make_connection(pServerInfo->connections + pServerInfo->index, err_no);
+    if (c != NULL)
+    {
+        return c;
+    }
+    if (pServerInfo->count == 1)
+    {
+        return NULL;
+    }
+
+	end = pServerInfo->connections + pServerInfo->count;
+	for (conn=pServerInfo->connections; conn<end; conn++)
+    {
+        current_index = conn - pServerInfo->connections;
+        if (current_index != pServerInfo->index)
+        {
+            if ((c=tracker_make_connection(conn, err_no)) != NULL)
+            {
+                pServerInfo->index = current_index;
+                return c;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+ConnectionInfo *tracker_connect_server_no_pool_ex(TrackerServerInfo *pServerInfo,
+        const char *bind_addr, int *err_no, const bool log_connect_error)
+{
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
+    int current_index;
+
+	if (pServerInfo->connections[pServerInfo->index].sock >= 0)
+	{
+        *err_no = 0;
+		return pServerInfo->connections + pServerInfo->index;
+	}
+
+	*err_no = conn_pool_connect_server_ex(pServerInfo->connections
+            + pServerInfo->index, g_fdfs_connect_timeout,
+            bind_addr, log_connect_error);
+    if (*err_no == 0)
+    {
+		return pServerInfo->connections + pServerInfo->index;
+    }
+
+    if (pServerInfo->count == 1)
+    {
+        return NULL;
+    }
+
+	end = pServerInfo->connections + pServerInfo->count;
+	for (conn=pServerInfo->connections; conn<end; conn++)
+    {
+        current_index = conn - pServerInfo->connections;
+        if (current_index != pServerInfo->index)
+        {
+            if ((*err_no=conn_pool_connect_server_ex(conn,
+                            g_fdfs_connect_timeout, bind_addr,
+                            log_connect_error)) == 0)
+            {
+                pServerInfo->index = current_index;
+                return pServerInfo->connections + pServerInfo->index;
+            }
+        }
+    }
+
+    return NULL;
+}
+
+ConnectionInfo *tracker_make_connection_ex(ConnectionInfo *conn,
 		const int connect_timeout, int *err_no)
 {
 	if (g_use_connection_pool)
 	{
 		return conn_pool_get_connection(&g_connection_pool,
-			pTrackerServer, err_no);
+			conn, err_no);
 	}
 	else
 	{
-		*err_no = conn_pool_connect_server(pTrackerServer, \
-				connect_timeout);
+		*err_no = conn_pool_connect_server(conn, connect_timeout);
 		if (*err_no != 0)
 		{
 			return NULL;
 		}
 		else
 		{
-			return pTrackerServer;
+			return conn;
 		}
 	}
 }
 
-int tracker_connect_server_no_pool(ConnectionInfo *pTrackerServer)
+void tracker_disconnect_server(TrackerServerInfo *pServerInfo)
 {
-	if (pTrackerServer->sock >= 0)
-	{
-		return 0;
-	}
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
 
-	return conn_pool_connect_server(pTrackerServer, \
-				g_fdfs_connect_timeout);
+    if (pServerInfo->count == 1)
+    {
+        tracker_close_connection_ex(pServerInfo->connections + 0, true);
+        return;
+    }
+
+	end = pServerInfo->connections + pServerInfo->count;
+	for (conn=pServerInfo->connections; conn<end; conn++)
+    {
+        tracker_close_connection_ex(conn, true);
+    }
+}
+
+void tracker_disconnect_server_no_pool(TrackerServerInfo *pServerInfo)
+{
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
+
+    if (pServerInfo->count == 1)
+    {
+        conn_pool_disconnect_server(pServerInfo->connections + 0);
+        return;
+    }
+
+	end = pServerInfo->connections + pServerInfo->count;
+	for (conn=pServerInfo->connections; conn<end; conn++)
+    {
+        conn_pool_disconnect_server(conn);
+    }
 }
 
 static int fdfs_do_parameter_req(ConnectionInfo *pTrackerServer, \
@@ -515,11 +621,12 @@ int fdfs_get_ini_context_from_tracker(TrackerServerGroup *pTrackerGroup, \
 		IniContext *iniContext, bool * volatile continue_flag, \
 		const bool client_bind_addr, const char *bind_addr)
 {
-	ConnectionInfo *pGlobalServer;
-	ConnectionInfo *pTServer;
-	ConnectionInfo *pServerStart;
-	ConnectionInfo *pServerEnd;
-	ConnectionInfo trackerServer;
+    ConnectionInfo *conn;
+	TrackerServerInfo *pGlobalServer;
+	TrackerServerInfo *pServerStart;
+	TrackerServerInfo *pServerEnd;
+	TrackerServerInfo *pTServer;
+	TrackerServerInfo trackerServer;
 	char in_buff[1024];
 	int result;
 	int leader_index;
@@ -539,88 +646,66 @@ int fdfs_get_ini_context_from_tracker(TrackerServerGroup *pTrackerGroup, \
 		pServerStart = pTrackerGroup->servers;
 	}
 
+    if (!client_bind_addr)
+    {
+        bind_addr = NULL;
+    }
+
 	do
-	{
-	for (pGlobalServer=pServerStart; pGlobalServer<pServerEnd; \
-			pGlobalServer++)
-	{
-		memcpy(pTServer, pGlobalServer, sizeof(ConnectionInfo));
-		for (i=0; i < 3; i++)
-		{
-			pTServer->sock = socket(AF_INET, SOCK_STREAM, 0);
-			if(pTServer->sock < 0)
-			{
-				result = errno != 0 ? errno : EPERM;
-				logError("file: "__FILE__", line: %d, " \
-					"socket create failed, errno: %d, " \
-					"error info: %s.", \
-					__LINE__, result, STRERROR(result));
-				sleep(5);
-				break;
-			}
+    {
+        conn = NULL;
+        for (pGlobalServer=pServerStart; pGlobalServer<pServerEnd;
+                pGlobalServer++)
+        {
+            memcpy(pTServer, pGlobalServer, sizeof(TrackerServerInfo));
+            fdfs_server_sock_reset(pTServer);
+            for (i=0; i < 3; i++)
+            {
+                conn = tracker_connect_server_no_pool_ex(pTServer,
+                        bind_addr, &result, false);
+                if (conn != NULL)
+                {
+                    break;
+                }
 
-			if (client_bind_addr && (bind_addr != NULL && \
-						*bind_addr != '\0'))
-			{
-				socketBind(pTServer->sock, bind_addr, 0);
-			}
+                sleep(1);
+            }
 
-			if (tcpsetnonblockopt(pTServer->sock) != 0)
-			{
-				close(pTServer->sock);
-				pTServer->sock = -1;
-				sleep(1);
-				continue;
-			}
+            if (conn == NULL)
+            {
+                logError("file: "__FILE__", line: %d, "
+                        "connect to server %s:%d fail, errno: %d, "
+                        "error info: %s", __LINE__, conn->ip_addr,
+                        conn->port, result, STRERROR(result));
+                continue;
+            }
 
-			if ((result=connectserverbyip_nb(pTServer->sock, \
-				pTServer->ip_addr, pTServer->port, \
-				g_fdfs_connect_timeout)) == 0)
-			{
-				break;
-			}
+            result = fdfs_do_parameter_req(conn, in_buff, sizeof(in_buff));
+            if (result == 0)
+            {
+                result = iniLoadFromBuffer(in_buff, iniContext);
 
-			close(pTServer->sock);
-			pTServer->sock = -1;
-			sleep(1);
-		}
+                close(conn->sock);
+                return result;
+            }
 
-		if (pTServer->sock < 0)
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"connect to tracker server %s:%d fail, " \
-				"errno: %d, error info: %s", \
-				__LINE__, pTServer->ip_addr, pTServer->port, \
-				result, STRERROR(result));
+            logError("file: "__FILE__", line: %d, "
+                    "get parameters from tracker server %s:%d fail",
+                    __LINE__, conn->ip_addr, conn->port);
+            close(conn->sock);
+            sleep(1);
+        }
 
-			continue;
-		}
-
-		result = fdfs_do_parameter_req(pTServer, in_buff, \
-						sizeof(in_buff));
-		if (result == 0)
-		{
-			result = iniLoadFromBuffer(in_buff, iniContext);
-
-			close(pTServer->sock);
-			return result;
-		}
-
-		fdfs_quit(pTServer);
-		close(pTServer->sock);
-		sleep(1);
-	}
-
-	if (pServerStart != pTrackerGroup->servers)
-	{
-		pServerStart = pTrackerGroup->servers;
-	}
-	} while (*continue_flag);
+        if (pServerStart != pTrackerGroup->servers)
+        {
+            pServerStart = pTrackerGroup->servers;
+        }
+    } while (*continue_flag);
 
 	return EINTR;
 }
 
-int fdfs_get_tracker_status(ConnectionInfo *pTrackerServer, \
+int fdfs_get_tracker_status(TrackerServerInfo *pTrackerServer,
 		TrackerRunningStatus *pStatus)
 {
 	char in_buff[1 + 2 * FDFS_PROTO_PKG_LEN_SIZE];
@@ -630,7 +715,7 @@ int fdfs_get_tracker_status(ConnectionInfo *pTrackerServer, \
 	int64_t in_bytes;
 	int result;
 
-	pTrackerServer->sock = -1;
+    fdfs_server_sock_reset(pTrackerServer);
 	if ((conn=tracker_connect_server(pTrackerServer, &result)) == NULL)
 	{
 		return result;
@@ -640,14 +725,13 @@ int fdfs_get_tracker_status(ConnectionInfo *pTrackerServer, \
 	{
 	memset(&header, 0, sizeof(header));
 	header.cmd = TRACKER_PROTO_CMD_TRACKER_GET_STATUS;
-	if ((result=tcpsenddata_nb(conn->sock, &header, \
+	if ((result=tcpsenddata_nb(conn->sock, &header,
 			sizeof(header), g_fdfs_network_timeout)) != 0)
 	{
-		logError("file: "__FILE__", line: %d, " \
-			"send data to tracker server %s:%d fail, " \
-			"errno: %d, error info: %s", __LINE__, \
-			pTrackerServer->ip_addr, \
-			pTrackerServer->port, \
+		logError("file: "__FILE__", line: %d, "
+			"send data to tracker server %s:%d fail, "
+			"errno: %d, error info: %s", __LINE__,
+			conn->ip_addr, conn->port,
 			result, STRERROR(result));
 
 		result = (result == ENOENT ? EACCES : result);
@@ -655,7 +739,7 @@ int fdfs_get_tracker_status(ConnectionInfo *pTrackerServer, \
 	}
 
 	pInBuff = in_buff;
-	result = fdfs_recv_response(conn, &pInBuff, \
+	result = fdfs_recv_response(conn, &pInBuff,
 				sizeof(in_buff), &in_bytes);
 	if (result != 0)
 	{
@@ -664,11 +748,11 @@ int fdfs_get_tracker_status(ConnectionInfo *pTrackerServer, \
 
 	if (in_bytes != sizeof(in_buff))
 	{
-		logError("file: "__FILE__", line: %d, " \
-			"tracker server %s:%d response data " \
-			"length: %"PRId64" is invalid, " \
-			"expect length: %d.", __LINE__, \
-			pTrackerServer->ip_addr, pTrackerServer->port, \
+		logError("file: "__FILE__", line: %d, "
+			"tracker server %s:%d response data "
+			"length: %"PRId64" is invalid, "
+			"expect length: %d.", __LINE__,
+			conn->ip_addr, conn->port,
 			in_bytes, (int)sizeof(in_buff));
 		result = EINVAL;
 		break;
@@ -681,8 +765,7 @@ int fdfs_get_tracker_status(ConnectionInfo *pTrackerServer, \
 
 	} while (0);
 
-	tracker_disconnect_server_ex(conn, result != 0);
+	tracker_close_connection_ex(conn, result != 0);
 
 	return result;
 }
-

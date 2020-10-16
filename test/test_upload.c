@@ -120,12 +120,10 @@ int main(int argc, char **argv)
 		return result;
 	}
 
-#ifndef WIN32
-	if (daemon(1, 1) != 0)
+    if ((result=my_daemon_init()) != 0)
 	{
-		return errno != 0 ? errno : EFAULT;
+		return result;
 	}
-#endif
 
 	memset(&storages, 0, sizeof(storages));
 	upload_count = 0;

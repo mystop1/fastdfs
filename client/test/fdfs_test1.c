@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 #include <stdio.h>
@@ -82,7 +82,7 @@ int main(int argc, char *argv[])
 "\nCopyright (C) 2008, Happy Fish / YuQing\n" \
 "\nFastDFS may be copied only under the terms of the GNU General\n" \
 "Public License V3, which may be found in the FastDFS source kit.\n" \
-"Please visit the FastDFS Home Page http://www.csource.org/ \n" \
+"Please visit the FastDFS Home Page http://www.fastken.com/ \n" \
 "for more detail.\n\n" \
 , g_fdfs_version.major, g_fdfs_version.minor);
 
@@ -191,7 +191,7 @@ int main(int argc, char *argv[])
 			group_name, storageServer.ip_addr, \
 			storageServer.port);
 
-		if ((pStorageServer=tracker_connect_server(&storageServer, \
+		if ((pStorageServer=tracker_make_connection(&storageServer, \
 			&result)) == NULL)
 		{
 			fdfs_client_destroy();
@@ -263,7 +263,7 @@ int main(int argc, char *argv[])
 			printf("upload file fail, " \
 				"error no: %d, error info: %s\n", \
 				result, STRERROR(result));
-			tracker_disconnect_server_ex(pStorageServer, true);
+			tracker_close_connection_ex(pStorageServer, true);
 			fdfs_client_destroy();
 			return result;
 		}
@@ -349,7 +349,7 @@ int main(int argc, char *argv[])
 			printf("upload slave file fail, " \
 				"error no: %d, error info: %s\n", \
 				result, STRERROR(result));
-			tracker_disconnect_server_ex(pStorageServer, true);
+			tracker_close_connection_ex(pStorageServer, true);
 			fdfs_client_destroy();
 			return result;
 		}
@@ -439,7 +439,7 @@ int main(int argc, char *argv[])
 				printf("\n");
 			}
 
-			tracker_disconnect_server_ex(pTrackerServer, true);
+			tracker_close_connection_ex(pTrackerServer, true);
 			fdfs_client_destroy();
 			return result;
 		}
@@ -458,7 +458,7 @@ int main(int argc, char *argv[])
 		printf("storage=%s:%d\n", storageServer.ip_addr, \
 			storageServer.port);
 
-		if ((pStorageServer=tracker_connect_server(&storageServer, \
+		if ((pStorageServer=tracker_make_connection(&storageServer, \
 			&result)) == NULL)
 		{
 			fdfs_client_destroy();
@@ -648,8 +648,8 @@ int main(int argc, char *argv[])
 			pStorageServer->ip_addr, pStorageServer->port, result);
 	}
 
-	tracker_disconnect_server_ex(pStorageServer, true);
-	tracker_disconnect_server_ex(pTrackerServer, true);
+	tracker_close_connection_ex(pStorageServer, true);
+	tracker_close_connection_ex(pTrackerServer, true);
 
 	fdfs_client_destroy();
 

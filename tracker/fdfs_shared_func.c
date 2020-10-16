@@ -3,30 +3,178 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <netdb.h>
 #include "fastcommon/logger.h"
 #include "fastcommon/sockopt.h"
 #include "fastcommon/shared_func.h"
+#include "fastcommon/local_ip_func.h"
 #include "tracker_proto.h"
 #include "fdfs_global.h"
 #include "fdfs_shared_func.h"
 
-FDFSStorageIdInfo *g_storage_ids_by_ip = NULL;  //sorted by group name and storage IP
-FDFSStorageIdInfo **g_storage_ids_by_id = NULL; //sorted by storage ID
-static FDFSStorageIdInfo **g_storage_ids_by_ip_port = NULL;  //sorted by storage ip and port
 
-int g_storage_id_count = 0;
+bool fdfs_server_contain(TrackerServerInfo *pServerInfo,
+        const char *target_ip, const int target_port)
+{
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
 
-int fdfs_get_tracker_leader_index_ex(TrackerServerGroup *pServerGroup, \
+    if (pServerInfo->count == 1)
+    {
+		return FC_CONNECTION_SERVER_EQUAL(pServerInfo->connections[0],
+                target_ip, target_port);
+    }
+    else if (pServerInfo->count == 2)
+    {
+		return FC_CONNECTION_SERVER_EQUAL(pServerInfo->connections[0],
+                target_ip, target_port) ||
+            FC_CONNECTION_SERVER_EQUAL(pServerInfo->connections[1],
+                    target_ip, target_port);
+    }
+
+	end = pServerInfo->connections + pServerInfo->count;
+	for (conn=pServerInfo->connections; conn<end; conn++)
+    {
+		if (FC_CONNECTION_SERVER_EQUAL(*conn, target_ip, target_port))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool fdfs_server_contain_ex(TrackerServerInfo *pServer1,
+        TrackerServerInfo *pServer2)
+{
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
+
+    if (pServer1->count == 1)
+    {
+        return fdfs_server_contain1(pServer2, pServer1->connections + 0);
+    }
+    else if (pServer1->count == 2)
+    {
+        if (fdfs_server_contain1(pServer2, pServer1->connections + 0))
+        {
+            return true;
+        }
+        return fdfs_server_contain1(pServer2, pServer1->connections + 1);
+    }
+
+	end = pServer1->connections + pServer1->count;
+	for (conn=pServer1->connections; conn<end; conn++)
+    {
+		if (fdfs_server_contain1(pServer2, conn))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool fdfs_server_equal(TrackerServerInfo *pServer1,
+        TrackerServerInfo *pServer2)
+{
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
+
+    if (pServer1->count != pServer2->count)
+    {
+        return false;
+    }
+
+    if (pServer1->count == 1)
+    {
+        return (pServer1->connections->port == pServer2->connections->port &&
+            strcmp(pServer1->connections->ip_addr, pServer2->connections->ip_addr) == 0);
+    }
+
+	end = pServer1->connections + pServer1->count;
+	for (conn=pServer1->connections; conn<end; conn++)
+    {
+		if (!fdfs_server_contain1(pServer2, conn))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool fdfs_server_contain_local_service(TrackerServerInfo *pServerInfo,
+        const int target_port)
+{
+    const char *current_ip;
+    
+    current_ip = get_first_local_ip();
+    while (current_ip != NULL)
+    {
+        if (fdfs_server_contain(pServerInfo, current_ip, target_port))
+        {
+            return true;
+        }
+        current_ip = get_next_local_ip(current_ip);
+    }
+
+    return false;
+}
+
+TrackerServerInfo *fdfs_tracker_group_get_server(TrackerServerGroup *pGroup,
+        const char *target_ip, const int target_port)
+{
+    TrackerServerInfo *pServer;
+    TrackerServerInfo *pEnd;
+
+    pEnd = pGroup->servers + pGroup->server_count;
+    for (pServer=pGroup->servers; pServer<pEnd; pServer++)
+    {
+        if (fdfs_server_contain(pServer, target_ip, target_port))
+        {
+            return pServer;
+        }
+    }
+
+    return NULL;
+}
+
+void fdfs_server_sock_reset(TrackerServerInfo *pServerInfo)
+{
+	ConnectionInfo *conn;
+	ConnectionInfo *end;
+
+    if (pServerInfo->count == 1)
+    {
+		pServerInfo->connections[0].sock = -1;
+    }
+    else if (pServerInfo->count == 2)
+    {
+		pServerInfo->connections[0].sock = -1;
+		pServerInfo->connections[1].sock = -1;
+    }
+    else
+    {
+        end = pServerInfo->connections + pServerInfo->count;
+        for (conn=pServerInfo->connections; conn<end; conn++)
+        {
+            conn->sock = -1;
+        }
+    }
+}
+
+int fdfs_get_tracker_leader_index_ex(TrackerServerGroup *pServerGroup,
 		const char *leaderIp, const int leaderPort)
 {
-	ConnectionInfo *pServer;
-	ConnectionInfo *pEnd;
+	TrackerServerInfo *pServer;
+	TrackerServerInfo *pEnd;
 
 	if (pServerGroup->server_count == 0)
 	{
@@ -36,8 +184,7 @@ int fdfs_get_tracker_leader_index_ex(TrackerServerGroup *pServerGroup, \
 	pEnd = pServerGroup->servers + pServerGroup->server_count;
 	for (pServer=pServerGroup->servers; pServer<pEnd; pServer++)
 	{
-		if (strcmp(pServer->ip_addr, leaderIp) == 0 && \
-			pServer->port == leaderPort)
+        if (fdfs_server_contain(pServer, leaderIp, leaderPort))
 		{
 			return pServer - pServerGroup->servers;
 		}
@@ -46,7 +193,7 @@ int fdfs_get_tracker_leader_index_ex(TrackerServerGroup *pServerGroup, \
 	return -1;
 }
 
-int fdfs_parse_storage_reserved_space(IniContext *pIniContext, \
+int fdfs_parse_storage_reserved_space(IniContext *pIniContext,
 		FDFSStorageReservedSpace *pStorageReservedSpace)
 {
 	int result;
@@ -244,753 +391,6 @@ bool fdfs_check_reserved_space_path(const int64_t total_mb, \
 	}
 }
 
-bool fdfs_is_server_id_valid(const char *id)
-{
-	long n;
-	char *endptr;
-	char buff[FDFS_STORAGE_ID_MAX_SIZE];
-
-	if (*id == '\0')
-	{
-		return false;
-	}
-
-	endptr = NULL;
-	n = strtol(id, &endptr, 10);
-	if (endptr != NULL && *endptr != '\0')
-	{
-		return false;
-	}
-
-	if (n <= 0 || n > FDFS_MAX_SERVER_ID)
-	{
-		return false;
-	}
-
-	snprintf(buff, sizeof(buff), "%ld", n);
-	return strcmp(buff, id) == 0;
-}
-
-int  fdfs_get_server_id_type(const int id)
-{
-  if (id > 0 && id <= FDFS_MAX_SERVER_ID)
-  {
-    return FDFS_ID_TYPE_SERVER_ID;
-  }
-  else
-  {
-    return FDFS_ID_TYPE_IP_ADDRESS;
-  }
-}
-
-static int fdfs_cmp_group_name_and_ip(const void *p1, const void *p2)
-{
-	int result;
-	result = strcmp(((FDFSStorageIdInfo *)p1)->group_name,
-		((FDFSStorageIdInfo *)p2)->group_name);
-	if (result != 0)
-	{
-		return result;
-	}
-
-	return strcmp(((FDFSStorageIdInfo *)p1)->ip_addr, \
-		((FDFSStorageIdInfo *)p2)->ip_addr);
-}
-
-static int fdfs_cmp_server_id(const void *p1, const void *p2)
-{
-	return strcmp((*((FDFSStorageIdInfo **)p1))->id, \
-		(*((FDFSStorageIdInfo **)p2))->id);
-}
-
-static int fdfs_cmp_ip_and_port(const void *p1, const void *p2)
-{
-	int result;
-    result = strcmp((*((FDFSStorageIdInfo **)p1))->ip_addr,
-            (*((FDFSStorageIdInfo **)p2))->ip_addr);
-    if (result != 0)
-    {
-        return result;
-    }
-
-    return (*((FDFSStorageIdInfo **)p1))->port -
-        (*((FDFSStorageIdInfo **)p2))->port;
-}
-
-FDFSStorageIdInfo *fdfs_get_storage_id_by_ip(const char *group_name, \
-		const char *pIpAddr)
-{
-	FDFSStorageIdInfo target;
-	memset(&target, 0, sizeof(FDFSStorageIdInfo));
-	snprintf(target.group_name, sizeof(target.group_name), "%s", group_name);
-	snprintf(target.ip_addr, sizeof(target.ip_addr), "%s", pIpAddr);
-	return (FDFSStorageIdInfo *)bsearch(&target, g_storage_ids_by_ip, \
-		g_storage_id_count, sizeof(FDFSStorageIdInfo), \
-		fdfs_cmp_group_name_and_ip);
-}
-
-FDFSStorageIdInfo *fdfs_get_storage_by_id(const char *id)
-{
-	FDFSStorageIdInfo target;
-	FDFSStorageIdInfo *pTarget;
-	FDFSStorageIdInfo **ppFound;
-
-	memset(&target, 0, sizeof(FDFSStorageIdInfo));
-	snprintf(target.id, sizeof(target.id), "%s", id);
-	pTarget = &target;
-	ppFound = (FDFSStorageIdInfo **)bsearch(&pTarget, g_storage_ids_by_id, \
-		g_storage_id_count, sizeof(FDFSStorageIdInfo *), \
-		fdfs_cmp_server_id);
-	if (ppFound == NULL)
-	{
-		return NULL;
-	}
-	else
-	{
-		return *ppFound;
-	}
-}
-
-static int fdfs_init_ip_port_array()
-{
-    int result;
-    int alloc_bytes;
-    int i;
-    int port_count;
-    FDFSStorageIdInfo *previous;
-
-    alloc_bytes = sizeof(FDFSStorageIdInfo *) * g_storage_id_count;
-    g_storage_ids_by_ip_port = (FDFSStorageIdInfo **)malloc(alloc_bytes);
-    if (g_storage_ids_by_ip_port == NULL)
-    {
-        result = errno != 0 ? errno : ENOMEM;
-        logError("file: "__FILE__", line: %d, " \
-                "malloc %d bytes fail, " \
-                "errno: %d, error info: %s", __LINE__, \
-                alloc_bytes, result, STRERROR(result));
-        return result;
-    }
-
-    port_count = 0;
-    for (i=0; i<g_storage_id_count; i++)
-    {
-        g_storage_ids_by_ip_port[i] = g_storage_ids_by_ip + i;
-        if (g_storage_ids_by_ip_port[i]->port > 0)
-        {
-            port_count++;
-        }
-    }
-    if (port_count > 0 && port_count != g_storage_id_count)
-    {
-        logError("file: "__FILE__", line: %d, "
-                "config file: storage_ids.conf, some storages without port, "
-                "must be the same format as host:port", __LINE__);
-
-        free(g_storage_ids_by_ip_port);
-        g_storage_ids_by_ip_port = NULL;
-        return EINVAL;
-    }
-
-	qsort(g_storage_ids_by_ip_port, g_storage_id_count,
-		sizeof(FDFSStorageIdInfo *), fdfs_cmp_ip_and_port);
-
-    previous = g_storage_ids_by_ip_port[0];
-    for (i=1; i<g_storage_id_count; i++)
-    {
-        if (fdfs_cmp_ip_and_port(&g_storage_ids_by_ip_port[i],
-                    &previous) == 0)
-        {
-            char szPortPart[16];
-            if (previous->port > 0)
-            {
-                sprintf(szPortPart, ":%d", previous->port);
-            }
-            else
-            {
-                *szPortPart = '\0';
-            }
-            logError("file: "__FILE__", line: %d, "
-                    "config file: storage_ids.conf, "
-                    "duplicate storage: %s%s", __LINE__,
-                    previous->ip_addr, szPortPart);
-
-            free(g_storage_ids_by_ip_port);
-            g_storage_ids_by_ip_port = NULL;
-            return EEXIST;
-        }
-
-        previous = g_storage_ids_by_ip_port[i];
-    }
-
-    return 0;
-}
-
-FDFSStorageIdInfo *fdfs_get_storage_id_by_ip_port(const char *pIpAddr,
-        const int port)
-{
-	FDFSStorageIdInfo target;
-	FDFSStorageIdInfo *pTarget;
-	FDFSStorageIdInfo **ppFound;
-    int ports[2];
-    int i;
-
-    if (g_storage_ids_by_ip_port == NULL)
-    {
-        if (fdfs_init_ip_port_array() != 0)
-        {
-            return NULL;
-        }
-    }
-
-	pTarget = &target;
-	memset(&target, 0, sizeof(FDFSStorageIdInfo));
-	snprintf(target.ip_addr, sizeof(target.ip_addr), "%s", pIpAddr);
-    ports[0] = port;
-    ports[1] = 0;
-    for (i=0; i<2; i++)
-    {
-        target.port = ports[i];
-        ppFound = (FDFSStorageIdInfo **)bsearch(&pTarget,
-                g_storage_ids_by_ip_port, g_storage_id_count,
-                sizeof(FDFSStorageIdInfo *), fdfs_cmp_ip_and_port);
-        if (ppFound != NULL)
-        {
-            return *ppFound;
-        }
-    }
-
-    return NULL;
-}
-
-int fdfs_check_storage_id(const char *group_name, const char *id)
-{
-	FDFSStorageIdInfo *pFound;
-
-	pFound = fdfs_get_storage_by_id(id);
-	if (pFound == NULL)
-	{
-		return ENOENT;
-	}
-
-	return strcmp(pFound->group_name, group_name) == 0 ? 0 : EINVAL;
-}
-
-int fdfs_load_storage_ids(char *content, const char *pStorageIdsFilename)
-{
-	char **lines;
-	char *line;
-	char *id;
-	char *group_name;
-	char *pHost;
-	char *pIpAddr;
-	char *pPort;
-	FDFSStorageIdInfo *pStorageIdInfo;
-	FDFSStorageIdInfo **ppStorageIdInfo;
-	FDFSStorageIdInfo **ppStorageIdEnd;
-	int alloc_bytes;
-	int result;
-	int line_count;
-	int i;
-
-	lines = split(content, '\n', 0, &line_count);
-	if (lines == NULL)
-	{
-		return ENOMEM;
-	}
-
-	result = 0;
-	do
-	{
-		g_storage_id_count = 0;
-		for (i=0; i<line_count; i++)
-		{
-			trim(lines[i]);
-			if (*lines[i] == '\0' || *lines[i] == '#')
-			{
-				continue;
-			}
-			g_storage_id_count++;
-		}
-
-		if (g_storage_id_count == 0)
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"config file: %s, no storage id!", \
-				__LINE__, pStorageIdsFilename);
-			result = ENOENT;
-			break;
-		}
-
-		alloc_bytes = sizeof(FDFSStorageIdInfo) * g_storage_id_count;
-		g_storage_ids_by_ip = (FDFSStorageIdInfo *)malloc(alloc_bytes);
-		if (g_storage_ids_by_ip == NULL)
-		{
-			result = errno != 0 ? errno : ENOMEM;
-			logError("file: "__FILE__", line: %d, " \
-				"malloc %d bytes fail, " \
-				"errno: %d, error info: %s", __LINE__, \
-				alloc_bytes, result, STRERROR(result));
-			break;
-		}
-		memset(g_storage_ids_by_ip, 0, alloc_bytes);
-
-		alloc_bytes = sizeof(FDFSStorageIdInfo *) * g_storage_id_count;
-		g_storage_ids_by_id = (FDFSStorageIdInfo **)malloc(alloc_bytes);
-		if (g_storage_ids_by_id == NULL)
-		{
-			result = errno != 0 ? errno : ENOMEM;
-			logError("file: "__FILE__", line: %d, " \
-				"malloc %d bytes fail, " \
-				"errno: %d, error info: %s", __LINE__, \
-				alloc_bytes, result, STRERROR(result));
-			free(g_storage_ids_by_ip);
-			break;
-		}
-		memset(g_storage_ids_by_id, 0, alloc_bytes);
-
-		pStorageIdInfo = g_storage_ids_by_ip;
-		for (i=0; i<line_count; i++)
-		{
-			line = lines[i];
-			if (*line == '\0' || *line == '#')
-			{
-				continue;
-			}
-
-			id = line;
-			group_name = line;
-			while (!(*group_name == ' ' || *group_name == '\t' \
-				|| *group_name == '\0'))
-			{
-				group_name++;
-			}
-
-			if (*group_name == '\0')
-			{
-				logError("file: "__FILE__", line: %d, " \
-					"config file: %s, line no: %d, " \
-					"content: %s, invalid format, " \
-					"expect group name and ip address!", \
-					__LINE__, pStorageIdsFilename, \
-					i + 1, line);
-				result = EINVAL;
-				break;
-			}
-
-			*group_name = '\0';
-			group_name++;  //skip space char
-			while (*group_name == ' ' || *group_name == '\t')
-			{
-				group_name++;
-			}
-		
-			pHost = group_name;
-			while (!(*pHost == ' ' || *pHost == '\t' \
-				|| *pHost == '\0'))
-			{
-				pHost++;
-			}
-
-			if (*pHost == '\0')
-			{
-				logError("file: "__FILE__", line: %d, " \
-					"config file: %s, line no: %d, " \
-					"content: %s, invalid format, " \
-					"expect ip address!", __LINE__, \
-					pStorageIdsFilename, i + 1, line);
-				result = EINVAL;
-				break;
-			}
-
-			*pHost = '\0';
-			pHost++;  //skip space char
-			while (*pHost == ' ' || *pHost == '\t')
-			{
-				pHost++;
-			}
-
-            pIpAddr = pHost;
-            pPort = strchr(pHost, ':');
-            if (pPort != NULL)
-            {
-                *pPort = '\0';
-                pStorageIdInfo->port = atoi(pPort + 1);
-            }
-            else
-            {
-                pStorageIdInfo->port = 0;
-            }
-			if (getIpaddrByName(pIpAddr, pStorageIdInfo->ip_addr, \
-				sizeof(pStorageIdInfo->ip_addr)) == INADDR_NONE)
-			{
-				logError("file: "__FILE__", line: %d, " \
-					"invalid host name: %s", __LINE__, pIpAddr);
-				result = EINVAL;
-				break;
-			}
-
-			if (!fdfs_is_server_id_valid(id))
-			{
-				logError("file: "__FILE__", line: %d, " \
-					"invalid server id: \"%s\", " \
-					"which must be a none zero start " \
-					"integer, such as 100001", __LINE__, id);
-				result = EINVAL;
-				break;
-			}
-
-			snprintf(pStorageIdInfo->id, \
-				sizeof(pStorageIdInfo->id), "%s", id);
-			snprintf(pStorageIdInfo->group_name, \
-				sizeof(pStorageIdInfo->group_name), \
-				"%s", group_name);
-			pStorageIdInfo++;
-		}
-	} while (0);
-
-	freeSplit(lines);
-	if (result != 0)
-	{
-		return result;
-	}
-
-	logDebug("file: "__FILE__", line: %d, " \
-		"g_storage_id_count: %d", __LINE__, g_storage_id_count);
-	pStorageIdInfo = g_storage_ids_by_ip;
-	for (i=0; i<g_storage_id_count; i++)
-	{
-        char szPortPart[16];
-        if (pStorageIdInfo->port > 0)
-        {
-            sprintf(szPortPart, ":%d", pStorageIdInfo->port);
-        }
-        else
-        {
-            *szPortPart = '\0';
-        }
-		logDebug("%s  %s  %s%s", pStorageIdInfo->id,
-			pStorageIdInfo->group_name,
-			pStorageIdInfo->ip_addr, szPortPart);
-
-		pStorageIdInfo++;
-	}
-	
-	ppStorageIdEnd = g_storage_ids_by_id + g_storage_id_count;
-	pStorageIdInfo = g_storage_ids_by_ip;
-	for (ppStorageIdInfo=g_storage_ids_by_id; ppStorageIdInfo < \
-		ppStorageIdEnd; ppStorageIdInfo++)
-	{
-		*ppStorageIdInfo = pStorageIdInfo++;
-	}
-
-	qsort(g_storage_ids_by_ip, g_storage_id_count, \
-		sizeof(FDFSStorageIdInfo), fdfs_cmp_group_name_and_ip);
-	qsort(g_storage_ids_by_id, g_storage_id_count, \
-		sizeof(FDFSStorageIdInfo *), fdfs_cmp_server_id);
-
-	return result;
-}
-
-int fdfs_get_storage_ids_from_tracker_server(ConnectionInfo *pTrackerServer)
-{
-#define MAX_REQUEST_LOOP   32
-	TrackerHeader *pHeader;
-	ConnectionInfo *conn;
-	char out_buff[sizeof(TrackerHeader) + sizeof(int)];
-	char *p;
-	char *response;
-	struct data_info {
-		char *buffer;  //for free
-		char *content;
-		int length;
-	} data_list[MAX_REQUEST_LOOP];
-	int list_count;
-	int total_count;
-	int current_count;
-	int result;
-	int i;
-	int start_index;
-	int64_t in_bytes;
-
-	if ((conn=tracker_connect_server(pTrackerServer, &result)) == NULL)
-	{
-		return result;
-	}
-
-	memset(data_list, 0, sizeof(data_list));
-	memset(out_buff, 0, sizeof(out_buff));
-	pHeader = (TrackerHeader *)out_buff;
-	p = out_buff + sizeof(TrackerHeader);
-	pHeader->cmd = TRACKER_PROTO_CMD_STORAGE_FETCH_STORAGE_IDS;
-	long2buff(sizeof(int), pHeader->pkg_len);
-
-	start_index = 0;
-	list_count = 0;
-	result = 0;
-	while (1)
-	{
-		int2buff(start_index, p);
-		if ((result=tcpsenddata_nb(conn->sock, out_buff, \
-			sizeof(out_buff), g_fdfs_network_timeout)) != 0)
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"send data to tracker server %s:%d fail, " \
-				"errno: %d, error info: %s", __LINE__, \
-				pTrackerServer->ip_addr, \
-				pTrackerServer->port, \
-				result, STRERROR(result));
-		}
-		else
-		{
-			response = NULL;
-			result = fdfs_recv_response(conn, \
-				&response, 0, &in_bytes);
-            if (result != 0)
-            {
-                logError("file: "__FILE__", line: %d, "
-                        "fdfs_recv_response fail, result: %d",
-                        __LINE__, result);
-            }
-		}
-
-		if (result != 0)
-		{
-			break;
-		}
-
-		if (in_bytes < 2 * sizeof(int))
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"tracker server %s:%d, recv data length: %d "\
-				"is invalid", __LINE__, 
-				pTrackerServer->ip_addr, \
-				pTrackerServer->port, (int)in_bytes);
-			result = EINVAL;
-			break;
-		}
-
-		total_count = buff2int(response);
-		current_count = buff2int(response + sizeof(int));
-		if (total_count <= start_index)
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"tracker server %s:%d, total storage " \
-				"count: %d is invalid, which <= start " \
-				"index: %d", __LINE__, pTrackerServer->ip_addr,\
-				pTrackerServer->port, total_count, start_index);
-			result = EINVAL;
-			break;
-		}
-
-		if (current_count <= 0)
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"tracker server %s:%d, current storage " \
-				"count: %d is invalid, which <= 0", \
-				__LINE__, pTrackerServer->ip_addr,\
-				pTrackerServer->port, current_count);
-			result = EINVAL;
-			break;
-		}
-
-		data_list[list_count].buffer = response;
-		data_list[list_count].content = response + 2 * sizeof(int);
-		data_list[list_count].length = in_bytes - 2 * sizeof(int);
-		list_count++;
-
-		/*
-		//logInfo("list_count: %d, total_count: %d, current_count: %d", 
-			list_count, total_count, current_count);
-		*/
-
-		start_index += current_count;
-		if (start_index >= total_count)
-		{
-			break;
-		}
-
-		if (list_count == MAX_REQUEST_LOOP)
-		{
-			logError("file: "__FILE__", line: %d, " \
-				"response data from tracker " \
-				"server %s:%d is too large", \
-				__LINE__, pTrackerServer->ip_addr,\
-				pTrackerServer->port);
-			result = ENOSPC;
-			break;
-		}
-	}
-
-	tracker_disconnect_server_ex(conn, result != 0);
-
-	if (result == 0)
-	{
-		do
-		{
-			int total_length;
-			char *content;
-
-			total_length = 0;
-			for (i=0; i<list_count; i++)
-			{
-				total_length += data_list[i].length;
-			}
-
-			content = (char *)malloc(total_length + 1);
-			if (content == NULL)
-			{
-				result = errno != 0 ? errno : ENOMEM;
-				logError("file: "__FILE__", line: %d, " \
-					"malloc %d bytes fail, " \
-					"errno: %d, error info: %s", \
-					__LINE__, total_length + 1, \
-					result, STRERROR(result));
-				break;
-			}
-
-			p = content;
-			for (i=0; i<list_count; i++)
-			{
-				memcpy(p, data_list[i].content, data_list[i].length);
-				p += data_list[i].length;
-			}
-			*p = '\0';
-
-			//logInfo("list_count: %d, storage ids:\n%s", list_count, content);
-
-			result = fdfs_load_storage_ids(content, \
-					"storage-ids-from-tracker");
-			free(content);
-		} while (0);
-	}
-
-	for (i=0; i<list_count; i++)
-	{
-		free(data_list[i].buffer);
-	}
-
-	return result;
-}
-
-int fdfs_get_storage_ids_from_tracker_group(TrackerServerGroup *pTrackerGroup)
-{
-	ConnectionInfo *pGServer;
-	ConnectionInfo *pTServer;
-	ConnectionInfo *pServerStart;
-	ConnectionInfo *pServerEnd;
-	ConnectionInfo trackerServer;
-	int result;
-	int leader_index;
-	int i;
-
-	pTServer = &trackerServer;
-	pServerEnd = pTrackerGroup->servers + pTrackerGroup->server_count;
-
-	leader_index = pTrackerGroup->leader_index;
-	if (leader_index >= 0)
-	{
-		pServerStart = pTrackerGroup->servers + leader_index;
-	}
-	else
-	{
-		pServerStart = pTrackerGroup->servers;
-	}
-
-	result = ENOENT;
-	for (i=0; i<5; i++)
-	{
-		for (pGServer=pServerStart; pGServer<pServerEnd; pGServer++)
-		{
-			memcpy(pTServer, pGServer, sizeof(ConnectionInfo));
-			pTServer->sock = -1;
-			result = fdfs_get_storage_ids_from_tracker_server(pTServer);
-			if (result == 0)
-			{
-				return result;
-			}
-		}
-
-		if (pServerStart != pTrackerGroup->servers)
-		{
-			pServerStart = pTrackerGroup->servers;
-		}
-		sleep(1);
-	}
-
-	return result;
-}
-
-int fdfs_load_storage_ids_from_file(const char *config_filename, \
-		IniContext *pItemContext)
-{
-	char *pStorageIdsFilename;
-	char *content;
-	int64_t file_size;
-	int result;
-
-	pStorageIdsFilename = iniGetStrValue(NULL, "storage_ids_filename", \
-				pItemContext);
-	if (pStorageIdsFilename == NULL)
-	{
-		logError("file: "__FILE__", line: %d, " \
-			"conf file \"%s\" must have item " \
-			"\"storage_ids_filename\"!", __LINE__, config_filename);
-		return ENOENT;
-	}
-
-	if (*pStorageIdsFilename == '\0')
-	{
-		logError("file: "__FILE__", line: %d, " \
-			"conf file \"%s\", storage_ids_filename is emtpy!", \
-			__LINE__, config_filename);
-		return EINVAL;
-	}
-
-	if (*pStorageIdsFilename == '/')  //absolute path
-	{
-		result = getFileContent(pStorageIdsFilename, \
-				&content, &file_size);
-	}
-	else
-	{
-		const char *lastSlash = strrchr(config_filename, '/');
-		if (lastSlash == NULL)
-		{
-			result = getFileContent(pStorageIdsFilename, \
-					&content, &file_size);
-		}
-		else
-		{
-			char filepath[MAX_PATH_SIZE];
-			char full_filename[MAX_PATH_SIZE];
-			int len;
-
-			len = lastSlash - config_filename;
-			if (len >= sizeof(filepath))
-			{
-				logError("file: "__FILE__", line: %d, " \
-					"conf filename: \"%s\" is too long!", \
-					__LINE__, config_filename);
-				return ENOSPC;
-			}
-			memcpy(filepath, config_filename, len);
-			*(filepath + len) = '\0';
-			snprintf(full_filename, sizeof(full_filename), \
-				"%s/%s", filepath, pStorageIdsFilename);
-			result = getFileContent(full_filename, \
-					&content, &file_size);
-		}
-	}
-	if (result != 0)
-	{
-		return result;
-	}
-
-	result = fdfs_load_storage_ids(content, pStorageIdsFilename);
-	free(content);
-	return result;
-}
-
 int fdfs_connection_pool_init(const char *config_filename, \
 		IniContext *pItemContext)
 {
@@ -1034,5 +434,352 @@ void fdfs_set_log_rotate_size(LogContext *pContext, const int64_t log_rotate_siz
 		pContext->rotate_size = 0;
 		log_set_rotate_time_format(pContext, "%Y%m%d");
 	}
+}
+
+int fdfs_parse_server_info_ex(char *server_str, const int default_port,
+        TrackerServerInfo *pServer, const bool resolve)
+{
+	char *pColon;
+    char *hosts[FDFS_MULTI_IP_MAX_COUNT];
+    ConnectionInfo *conn;
+    int port;
+    int i;
+
+    memset(pServer, 0, sizeof(TrackerServerInfo));
+    if ((pColon=strrchr(server_str, ':')) == NULL)
+    {
+        logInfo("file: "__FILE__", line: %d, "
+                "no port part in %s, set port to %d",
+                __LINE__, server_str, default_port);
+        port = default_port;
+    }
+    else
+    {
+        *pColon = '\0';
+        port = atoi(pColon + 1);
+    }
+
+    conn = pServer->connections;
+    pServer->count =  splitEx(server_str, ',',
+            hosts, FDFS_MULTI_IP_MAX_COUNT);
+    for (i=0; i<pServer->count; i++)
+    {
+        if (resolve)
+        {
+            if (getIpaddrByName(hosts[i], conn->ip_addr,
+                        sizeof(conn->ip_addr)) == INADDR_NONE)
+            {
+                logError("file: "__FILE__", line: %d, "
+                        "host \"%s\" is invalid, error info: %s",
+                        __LINE__, hosts[i], hstrerror(h_errno));
+                return EINVAL;
+            }
+        }
+        else
+        {
+            snprintf(conn->ip_addr, sizeof(conn->ip_addr), "%s", hosts[i]);
+        }
+        conn->port = port;
+        conn->sock = -1;
+        conn++;
+    }
+
+    return 0;
+}
+
+int fdfs_server_info_to_string_ex(const TrackerServerInfo *pServer,
+        const int port, char *buff, const int buffSize)
+{
+	const ConnectionInfo *conn;
+	const ConnectionInfo *end;
+    int len;
+
+    if (pServer->count <= 0)
+    {
+        *buff = '\0';
+        return 0;
+    }
+    if (pServer->count == 1)
+    {
+        return snprintf(buff, buffSize, "%s:%d",
+                pServer->connections[0].ip_addr, port);
+    }
+
+    len = snprintf(buff, buffSize, "%s", pServer->connections[0].ip_addr);
+	end = pServer->connections + pServer->count;
+	for (conn=pServer->connections + 1; conn<end; conn++)
+    {
+        len += snprintf(buff + len, buffSize - len, ",%s", conn->ip_addr);
+    }
+    len += snprintf(buff + len, buffSize - len, ":%d", port);
+    return len;
+}
+
+int fdfs_get_ip_type(const char* ip)
+{
+    if (ip == NULL || (int)strlen(ip) < 8)
+    {
+        return FDFS_IP_TYPE_UNKNOWN;
+    }
+
+    if (memcmp(ip, "10.", 3) == 0)
+    {
+        return FDFS_IP_TYPE_PRIVATE_10;
+    }
+    if (memcmp(ip, "192.168.", 8) == 0)
+    {
+        return FDFS_IP_TYPE_PRIVATE_192;
+    }
+
+    if (memcmp(ip, "172.", 4) == 0)
+    {
+        int b;
+        b = atoi(ip + 4);
+        if (b >= 16 && b < 32)
+        {
+            return FDFS_IP_TYPE_PRIVATE_172;
+        }
+    }
+
+    return FDFS_IP_TYPE_OUTER;
+}
+
+int fdfs_check_server_ips(const TrackerServerInfo *pServer,
+        char *error_info, const int error_size)
+{
+    int type0;
+    int type1;
+    if (pServer->count == 1)
+    {
+        *error_info = '\0';
+        return 0;
+    }
+
+    if (pServer->count <= 0)
+    {
+        logError("file: "__FILE__", line: %d, "
+                "empty server", __LINE__);
+        return EINVAL;
+    }
+
+    if (pServer->count > FDFS_MULTI_IP_MAX_COUNT)
+    {
+        snprintf(error_info, error_size,
+                "too many server ip addresses: %d, exceeds %d",
+                pServer->count, FDFS_MULTI_IP_MAX_COUNT);
+        return EINVAL;
+    }
+
+    type0 = fdfs_get_ip_type(pServer->connections[0].ip_addr);
+    type1 = fdfs_get_ip_type(pServer->connections[1].ip_addr);
+    if (type0 == type1)
+    {
+        snprintf(error_info, error_size,
+                "invalid ip addresses %s and %s, "
+                "one MUST be an inner IP and another is a outer IP, "
+                "or two different types of inner IP addresses",
+                pServer->connections[0].ip_addr,
+                pServer->connections[1].ip_addr);
+        return EINVAL;
+    }
+
+    *error_info = '\0';
+    return 0;
+}
+
+int fdfs_parse_multi_ips_ex(char *ip_str, FDFSMultiIP *ip_addrs,
+        char *error_info, const int error_size, const bool resolve)
+{
+    char *hosts[FDFS_MULTI_IP_MAX_COUNT];
+    int i;
+
+    ip_addrs->index = 0;
+    ip_addrs->count = splitEx(ip_str, ',', hosts, FDFS_MULTI_IP_MAX_COUNT);
+    for (i=0; i<ip_addrs->count; i++)
+    {
+        if (resolve)
+        {
+            if (getIpaddrByName(hosts[i], ip_addrs->ips[i].address,
+                        sizeof(ip_addrs->ips[i].address)) == INADDR_NONE)
+            {
+                snprintf(error_info, error_size,
+                        "host \"%s\" is invalid, error info: %s",
+                        hosts[i], hstrerror(h_errno));
+                return EINVAL;
+            }
+        }
+        else
+        {
+            snprintf(ip_addrs->ips[i].address,
+                    sizeof(ip_addrs->ips[i].address), "%s", hosts[i]);
+        }
+
+        ip_addrs->ips[i].type = fdfs_get_ip_type(ip_addrs->ips[i].address);
+        if (ip_addrs->ips[i].type == FDFS_IP_TYPE_UNKNOWN)
+        {
+            snprintf(error_info, error_size,
+                    "ip address \"%s\" is invalid",
+                    ip_addrs->ips[i].address);
+            return EINVAL;
+        }
+    }
+
+    *error_info = '\0';
+    return 0;
+}
+
+int fdfs_multi_ips_to_string_ex(const FDFSMultiIP *ip_addrs,
+        const char seperator, char *buff, const int buffSize)
+{
+    int i;
+    int len;
+
+    if (ip_addrs->count <= 0)
+    {
+        *buff = '\0';
+        return 0;
+    }
+    if (ip_addrs->count == 1)
+    {
+        return snprintf(buff, buffSize, "%s",
+                ip_addrs->ips[0].address);
+    }
+
+    len = snprintf(buff, buffSize, "%s", ip_addrs->ips[0].address);
+	for (i=1; i<ip_addrs->count; i++)
+    {
+        len += snprintf(buff + len, buffSize - len, "%c%s",
+                seperator, ip_addrs->ips[i].address);
+    }
+    return len;
+}
+
+const char *fdfs_get_ipaddr_by_peer_ip(const FDFSMultiIP *ip_addrs,
+        const char *client_ip)
+{
+    int ip_type;
+    int index;
+    if (ip_addrs->count == 1)
+    {
+        return ip_addrs->ips[0].address;
+    }
+
+    if (ip_addrs->count <= 0)
+    {
+        return "";
+    }
+
+    ip_type = fdfs_get_ip_type(client_ip);
+    index = ip_addrs->ips[FDFS_MULTI_IP_INDEX_OUTER].type == ip_type ?
+        FDFS_MULTI_IP_INDEX_OUTER : FDFS_MULTI_IP_INDEX_INNER;
+    return ip_addrs->ips[index].address;
+}
+
+int fdfs_check_and_format_ips(FDFSMultiIP *ip_addrs,
+        char *error_info, const int error_size)
+{
+    FDFSIPInfo swap_ip;
+    if (ip_addrs->count == 1)
+    {
+        *error_info = '\0';
+        return 0;
+    }
+
+    if (ip_addrs->count <= 0)
+    {
+        logError("file: "__FILE__", line: %d, "
+                "empty server", __LINE__);
+        return EINVAL;
+    }
+
+    if (ip_addrs->count > FDFS_MULTI_IP_MAX_COUNT)
+    {
+        snprintf(error_info, error_size,
+                "too many server ip addresses: %d, exceeds %d",
+                ip_addrs->count, FDFS_MULTI_IP_MAX_COUNT);
+        return EINVAL;
+    }
+
+    if (ip_addrs->ips[FDFS_MULTI_IP_INDEX_INNER].type ==
+            ip_addrs->ips[FDFS_MULTI_IP_INDEX_OUTER].type)
+    {
+        snprintf(error_info, error_size,
+                "invalid ip addresses %s and %s, "
+                "one MUST be an inner IP and another is a outer IP, "
+                "or two different types of inner IP addresses",
+                ip_addrs->ips[0].address, ip_addrs->ips[1].address);
+        return EINVAL;
+    }
+
+    if (ip_addrs->ips[FDFS_MULTI_IP_INDEX_INNER].type == FDFS_IP_TYPE_OUTER)
+    {
+        swap_ip = ip_addrs->ips[FDFS_MULTI_IP_INDEX_INNER];
+        ip_addrs->ips[FDFS_MULTI_IP_INDEX_INNER] =
+            ip_addrs->ips[FDFS_MULTI_IP_INDEX_OUTER];
+        ip_addrs->ips[FDFS_MULTI_IP_INDEX_OUTER] = swap_ip;
+    }
+
+    *error_info = '\0';
+    return 0;
+}
+
+void fdfs_set_multi_ip_index(FDFSMultiIP *multi_ip, const char *target_ip)
+{
+    int i;
+    if (multi_ip->count <= 1)
+    {
+        return;
+    }
+
+    for (i=0; i<multi_ip->count; i++)
+    {
+        if (strcmp(multi_ip->ips[i].address, target_ip) == 0)
+        {
+            multi_ip->index = i;
+            break;
+        }
+    }
+}
+
+void fdfs_set_server_info_index(TrackerServerInfo *pServer,
+        const char *target_ip, const int target_port)
+{
+    int i;
+    if (pServer->count <= 1)
+    {
+        return;
+    }
+
+    for (i=0; i<pServer->count; i++)
+    {
+        if (FC_CONNECTION_SERVER_EQUAL(pServer->connections[i],
+                    target_ip, target_port))
+        {
+            pServer->index = i;
+            break;
+        }
+    }
+}
+
+void fdfs_set_server_info(TrackerServerInfo *pServer,
+        const char *ip_addr, const int port)
+{
+    pServer->count = 1;
+    pServer->index = 0;
+    conn_pool_set_server_info(pServer->connections + 0, ip_addr, port);
+}
+
+void fdfs_set_server_info_ex(TrackerServerInfo *pServer,
+        const FDFSMultiIP *ip_addrs, const int port)
+{
+    int i;
+
+    pServer->count = ip_addrs->count;
+    pServer->index = 0;
+    for (i=0; i<ip_addrs->count; i++)
+    {
+        conn_pool_set_server_info(pServer->connections + i,
+                ip_addrs->ips[i].address, port);
+    }
 }
 

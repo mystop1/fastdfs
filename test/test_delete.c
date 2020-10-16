@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include "fastcommon/shared_func.h"
 #include "fastcommon/logger.h"
 #include "test_types.h"
 #include "common_func.h"
@@ -118,12 +119,10 @@ int main(int argc, char **argv)
 		return result;
 	}
 
-#ifndef WIN32
-	if (daemon(1, 1) != 0)
+    if ((result=my_daemon_init()) != 0)
 	{
-		return errno != 0 ? errno : EFAULT;
+		return result;
 	}
-#endif
 
 	/*
 	printf("file_count = %d\n", file_count);

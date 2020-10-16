@@ -3,7 +3,7 @@
 *
 * FastDFS may be copied only under the terms of the GNU General
 * Public License V3, which may be found in the FastDFS source kit.
-* Please visit the FastDFS Home Page http://www.csource.org/ for more detail.
+* Please visit the FastDFS Home Page http://www.fastken.com/ for more detail.
 **/
 
 //tracker_types.h
@@ -117,10 +117,18 @@
 #define FDFS_TRUNK_FILE_TRUE_SIZE(file_size) \
 	(file_size & 0xFFFFFFFF)
 
+#define FDFS_FILE_TYPE_NORMAL	1  //normal file
+#define FDFS_FILE_TYPE_APPENDER 2  //appender file
+#define FDFS_FILE_TYPE_SLAVE    4  //slave file
+
 #define FDFS_STORAGE_ID_MAX_SIZE	16
 
 #define TRACKER_STORAGE_RESERVED_SPACE_FLAG_MB		0
 #define TRACKER_STORAGE_RESERVED_SPACE_FLAG_RATIO	1
+
+#define FDFS_MULTI_IP_INDEX_INNER   	0   //inner ip index
+#define FDFS_MULTI_IP_INDEX_OUTER   	1   //outer ip index
+#define FDFS_MULTI_IP_MAX_COUNT      	2
 
 typedef struct
 {
@@ -268,12 +276,28 @@ typedef struct
 	char sz_last_heart_beat_time[8];
 } FDFSStorageStatBuff;
 
+typedef struct StructFDFSIPInfo
+{
+    int type;   //ip type
+	char address[IP_ADDRESS_SIZE];
+} FDFSIPInfo;
+
+typedef struct StructFDFSMultiIP
+{
+    int count;
+    int index;
+	FDFSIPInfo ips[FDFS_MULTI_IP_MAX_COUNT];
+} FDFSMultiIP;
+
+#define FDFS_CURRENT_IP_ADDR(pServer) \
+    (pServer)->ip_addrs.ips[(pServer)->ip_addrs.index].address
+
 typedef struct StructFDFSStorageDetail
 {
 	char status;
 	char padding;  //just for padding
 	char id[FDFS_STORAGE_ID_MAX_SIZE];
-	char ip_addr[IP_ADDRESS_SIZE];
+    FDFSMultiIP ip_addrs;
 	char version[FDFS_VERSION_SIZE];
 	char domain_name[FDFS_DOMAIN_NAME_MAX_SIZE];
 
@@ -386,20 +410,27 @@ typedef struct
 
 typedef struct
 {
-	int storage_port;
-	int storage_http_port;
-	int store_path_count;
-	int subdir_count_per_path;
-	int upload_priority;
-	int join_time; //storage join timestamp (create timestamp)
-	int up_time;   //storage service started timestamp
-        char version[FDFS_VERSION_SIZE];   //storage version
-	char group_name[FDFS_GROUP_NAME_MAX_LEN + 1];
-        char domain_name[FDFS_DOMAIN_NAME_MAX_SIZE];
-        char init_flag;
-	signed char status;
-	int tracker_count;
-	ConnectionInfo tracker_servers[FDFS_MAX_TRACKERS];
+	int count;
+	int index;  //current index for fast connect
+	ConnectionInfo connections[FDFS_MULTI_IP_MAX_COUNT];
+} TrackerServerInfo;
+
+typedef struct
+{
+    int storage_port;
+    int storage_http_port;
+    int store_path_count;
+    int subdir_count_per_path;
+    int upload_priority;
+    int join_time; //storage join timestamp (create timestamp)
+    int up_time;   //storage service started timestamp
+    char version[FDFS_VERSION_SIZE];   //storage version
+    char group_name[FDFS_GROUP_NAME_MAX_LEN + 1];
+    char domain_name[FDFS_DOMAIN_NAME_MAX_SIZE];
+    char init_flag;
+    signed char status;
+    int tracker_count;
+    TrackerServerInfo tracker_servers[FDFS_MAX_TRACKERS];
 } FDFSStorageJoinBody;
 
 typedef struct
@@ -407,7 +438,7 @@ typedef struct
 	int server_count;
 	int server_index;  //server index for roundrobin
 	int leader_index;  //leader server index
-	ConnectionInfo *servers;
+	TrackerServerInfo *servers;
 } TrackerServerGroup;
 
 typedef struct
@@ -417,14 +448,6 @@ typedef struct
 	int length;    //the content length
 	int version;   //for binlog pre-read, compare with binlog_write_version
 } BinLogBuffer;
-
-typedef struct
-{
-	char id[FDFS_STORAGE_ID_MAX_SIZE];
-	char group_name[FDFS_GROUP_NAME_MAX_LEN + 8];  //for 8 bytes alignment
-	char ip_addr[IP_ADDRESS_SIZE];
-    int port;   //since v5.05
-} FDFSStorageIdInfo;
 
 typedef struct
 {
@@ -442,12 +465,7 @@ typedef struct {
 } FDFSStorageReservedSpace;
 
 typedef struct {
-	int count;   //store path count
-	char **paths; //file store paths
-} FDFSStorePaths;
-
-typedef struct {
-	ConnectionInfo *pTrackerServer;
+	TrackerServerInfo *pTrackerServer;
 	int running_time;     //running seconds, more means higher weight
 	int restart_interval; //restart interval, less mean higher weight
 	bool if_leader;       //if leader
